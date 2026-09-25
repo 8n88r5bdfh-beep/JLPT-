@@ -79,7 +79,7 @@
     .opt.correct .num{background:var(--ok);color:white}
     .opt.wrong{border-color:var(--bad);background:var(--bad-soft);color:var(--bad)}
     .opt.wrong .num{background:var(--bad);color:white}
-    .feedback{display:none;margin-top:13px;padding:13px;border-radius:13px;text-align:left;font-size:.88rem;line-height:1.55}
+    .feedback{display:none;margin-top:13px;padding:13px;border-radius:13px;text-align:left;font-size:.88rem;line-height:1.55;white-space:pre-line}
     .feedback.ok{display:block;background:var(--ok-soft);color:var(--ok)}
     .feedback.bad{display:block;background:var(--bad-soft);color:var(--bad)}
     .next-btn{display:none;width:100%;border:0;background:var(--primary);color:#fff;border-radius:13px;padding:14px;font-weight:900;margin-top:12px}
@@ -120,7 +120,7 @@
     </div>
 
     <div class="smallprint">
-      데이터: JLPT 분류는 AnchorI JLPT Kanji Dictionary, 한국 한자 훈음은 공개 학습용 한자 데이터, 예시 단어는 kanjiapi.dev/JMdict를 사용합니다. 예시 단어는 질문 한자를 포함하면서 가급적 2~4자의 한자 표기 단어 중 우선순위가 높은 항목을 자동 선택합니다.
+      데이터: JLPT 분류는 AnchorI JLPT Kanji Dictionary, 한국 한자 훈음은 공개 학습용 한자 데이터, 예시 단어는 kanjiapi.dev/JMdict를 사용합니다. 예시 단어는 질문 한자를 포함하면서 가급적 2~4자의 한자 표기 단어 중 우선순위가 높은 항목을 자동 선택하며, 답을 고른 뒤 대표 영문 뜻을 한국어로 자동 번역해 함께 표시합니다.
     </div>
   </section>
 
@@ -171,7 +171,8 @@
   const URLS = {
     jlpt: 'https://raw.githubusercontent.com/AnchorI/jlpt-kanji-dictionary/main/jlpt-kanji.json',
     korean: 'https://raw.githubusercontent.com/muns5965/muns5965.github.io/main/jlpt_test/data/joyo_kanji_2136_ko_only.items.json',
-    words: ch => `https://kanjiapi.dev/v1/words/${encodeURIComponent(ch)}`
+    words: ch => `https://kanjiapi.dev/v1/words/${encodeURIComponent(ch)}`,
+    translate: text => `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|ko`
   };
   const KEYS = {
     progress:'jlpt_kanji_review_progress_v1',
@@ -181,7 +182,7 @@
 
   const state = {
     dataByLevel:{}, allItems:[], progress:loadJSON(KEYS.progress, {}), examples:loadJSON(KEYS.exampleCache, {}),
-    session:null, current:null, answered:false, selectedIndex:null
+    session:null, current:null, currentExample:null, answered:false, selectedIndex:null
   };
 
   const $ = s => document.querySelector(s);
@@ -270,8 +271,16 @@
     $('#quizTitle').textContent=`${level} · ${MODES[mode]}`;
     $('#targetKanji').textContent=q.kanji;
     $('#feedback').className='feedback'; $('#feedback').textContent=''; $('#nextBtn').style.display='none';
-    const exampleMode=mode==='example'; $('#exampleWrap').style.display=exampleMode?'block':'none';
-    if(exampleMode){ $('#exampleWord').innerHTML='<span class="example-loading">불러오는 중…</span>'; getExample(q.kanji).then(w=>{ if(state.current?.kanji===q.kanji) $('#exampleWord').textContent=w||'예시 없음'; }); }
+    const exampleMode=mode==='example'; $('#exampleWrap').style.display=exampleMode?'block':'none'; state.currentExample=null;
+    if(exampleMode){
+      $('#exampleWord').innerHTML='<span class="example-loading">불러오는 중…</span>';
+      getExample(q.kanji).then(info=>{
+        if(state.current?.kanji===q.kanji){
+          state.currentExample=info;
+          $('#exampleWord').textContent=info?.word||'예시 없음';
+        }
+      });
+    }
 
     const correct=primaryLabel(q); const unique=new Map(); unique.set(correct,correct);
     const pool=shuffle(data.filter(x=>x.kanji!==q.kanji));
@@ -283,19 +292,33 @@
     });
     updateStats();
   }
+  function formatExampleFeedback(info){
+    if(!info?.word) return '';
+    return `\n예시단어 · ${info.word}${info.meaning?` — ${info.meaning}`:''}`;
+  }
   function answer(btn,chosen,correct){
     if(state.answered) return; state.answered=true;
     const {level,mode}=state.session, q=state.current, p=getP(level,mode), isCorrect=chosen===correct;
     if(!p.seen.includes(q.kanji)) p.seen.push(q.kanji);
     [...$('#options').children].forEach(b=>{b.disabled=true;if(b.dataset.label===correct)b.classList.add('correct');});
+    let baseFeedback='';
     if(isCorrect){
       if(!p.mastered.includes(q.kanji)) p.mastered.push(q.kanji); p.wrong=p.wrong.filter(k=>k!==q.kanji);
-      btn.classList.add('correct'); $('#feedback').className='feedback ok'; $('#feedback').textContent=`정답 · ${correct}`;
+      btn.classList.add('correct'); $('#feedback').className='feedback ok'; baseFeedback=`정답 · ${correct}`;
     } else {
       if(!p.wrong.includes(q.kanji)) p.wrong.push(q.kanji); btn.classList.add('wrong');
       // Reinsert later, not immediately, so memorization is spaced within the session.
       const gap=Math.min(state.session.queue.length, 4+Math.floor(Math.random()*4)); state.session.queue.splice(gap,0,q);
-      $('#feedback').className='feedback bad'; $('#feedback').textContent=`오답 · 정답은 “${correct}”입니다. 이 한자는 잠시 뒤 다시 출제됩니다.`;
+      $('#feedback').className='feedback bad'; baseFeedback=`오답 · 정답은 “${correct}”입니다. 이 한자는 잠시 뒤 다시 출제됩니다.`;
+    }
+    $('#feedback').textContent=baseFeedback + (mode==='example'?formatExampleFeedback(state.currentExample):'');
+    if(mode==='example' && (!state.currentExample?.meaning)){
+      getExample(q.kanji).then(info=>{
+        if(state.current?.kanji===q.kanji && state.answered){
+          state.currentExample=info;
+          $('#feedback').textContent=baseFeedback+formatExampleFeedback(info);
+        }
+      });
     }
     saveProgress(); updateStats(); $('#nextBtn').style.display='block';
   }
@@ -311,11 +334,26 @@
   }
   function goHome(){ state.session=null; state.current=null; $('#quizView').style.display='none'; $('#homeView').style.display='block'; renderHome(); window.scrollTo({top:0,behavior:'smooth'}); }
 
+  function decodeHTML(s){
+    const t=document.createElement('textarea'); t.innerHTML=s||''; return t.value;
+  }
+  async function translateGloss(gloss){
+    if(!gloss) return '';
+    try{
+      const r=await fetch(URLS.translate(gloss)); if(!r.ok) throw new Error('translate api');
+      const data=await r.json(); const translated=decodeHTML(data?.responseData?.translatedText||'').trim();
+      if(!translated || /MYMEMORY WARNING/i.test(translated)) return '';
+      return translated;
+    }catch{return '';}
+  }
   async function getExample(ch){
-    if(state.examples[ch]) return state.examples[ch];
+    const cached=state.examples[ch];
+    if(cached && typeof cached==='object' && cached.word && cached.meaning) return cached;
+    const cachedWord=typeof cached==='string'?cached:(cached?.word||'');
     try{
       const r=await fetch(URLS.words(ch)); if(!r.ok) throw new Error('word api'); const entries=await r.json(); const candidates=[];
       for(const entry of entries||[]){
+        const gloss=(entry.meanings?.[0]?.glosses||[]).slice(0,2).join('; ');
         for(const v of entry.variants||[]){
           const w=(v.written||'').trim(); if(!w.includes(ch)) continue; if(w.length<2||w.length>4) continue;
           if(!/^[\u3400-\u4DBF\u4E00-\u9FFF々〆ヶ]+$/u.test(w)) continue;
@@ -324,13 +362,17 @@
           if(pri.some(x=>/^(ichi2|news2|spec2|gai2)$/.test(x))) score+=20;
           const nf=pri.map(x=>/^nf(\d+)$/.exec(x)).filter(Boolean).map(m=>Number(m[1])); if(nf.length) score+=Math.max(0,30-Math.min(...nf));
           score += w.length===2?9:w.length===3?6:3; if(w.startsWith(ch)) score+=2;
-          candidates.push({w,score});
+          candidates.push({w,score,gloss});
         }
       }
       candidates.sort((a,b)=>b.score-a.score||a.w.length-b.w.length);
-      const word=candidates[0]?.w || ch;
-      state.examples[ch]=word; try{localStorage.setItem(KEYS.exampleCache,JSON.stringify(state.examples));}catch{} return word;
-    }catch{ return ch; }
+      const best=candidates[0], word=best?.w||cachedWord||ch, gloss=best?.gloss||'';
+      const meaning=await translateGloss(gloss);
+      const info={word,meaning,gloss};
+      state.examples[ch]=info; try{localStorage.setItem(KEYS.exampleCache,JSON.stringify(state.examples));}catch{} return info;
+    }catch{
+      return {word:cachedWord||ch,meaning:'',gloss:''};
+    }
   }
 
   function exportProgress(){
